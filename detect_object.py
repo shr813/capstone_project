@@ -7,7 +7,7 @@ import pyttsx3
 import mediapipe as mp
 from ultralytics import YOLO
 
-# 📁 설정
+#  설정
 FRAME_DIR = "frames"
 TASK_FILENAME = "task_plan.json"
 ARRIVE_THRESHOLD = 250      # ← 도착으로 인식할 거리
@@ -106,13 +106,13 @@ if __name__ == "__main__":
 
         print(f"📏 손과 타겟 거리: {int(distance)}px, dx={dx}, dy={dy}")
 
-        # ✅ 방향 판단: dx 우선
+        # 방향 판단: dx 우선
         if abs(dx) > abs(dy):
             direction_feedback = "오른쪽으로 이동하세요." if dx > 0 else "왼쪽으로 이동하세요."
         else:
             direction_feedback = "아래로 이동하세요." if dy > 0 else "위로 이동하세요."
 
-        # ✅ 피드백 결정 (도착 / 접근 / 멀어짐)
+        # 피드백 결정 (도착 / 접근 / 멀어짐)
         if distance < ARRIVE_THRESHOLD:
             feedback = "도착했습니다! 손을 뻗어 잡으세요."
         elif distance < NEAR_THRESHOLD:
