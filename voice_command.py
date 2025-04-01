@@ -37,7 +37,7 @@ def record_audio():
         wf.setframerate(RATE)
         wf.writeframes(b''.join(frames))
 
-    # 🔊 음량 정규화
+    # 음량 정규화
     sound = AudioSegment.from_wav(OUTPUT_FILENAME)
     normalized_sound = normalize(sound)
     normalized_sound.export(OUTPUT_FILENAME, format="wav")
@@ -47,7 +47,7 @@ def transcribe_audio():
     """Whisper로 오디오 파일을 텍스트로 변환하고 저장"""
     print("음성을 텍스트로 변환 중...")
 
-    # 🗣 한국어 명시
+    # 한국어 명시
     result = model.transcribe(OUTPUT_FILENAME, language="ko")
     command_text = result["text"]
 
