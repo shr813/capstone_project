@@ -35,7 +35,7 @@ frame_lock = threading.Lock()
 feedback_lock = threading.Lock()
 
 def give_feedback(text):
-    print(f"🗣 {text}")
+    print(f" {text}")
     try:
         tts.say(text)
         tts.runAndWait()
