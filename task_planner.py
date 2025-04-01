@@ -5,7 +5,7 @@ import os
 # API 키 로딩
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
-    raise ValueError("OpenAI API 키가 설정되지 않았습니다. 환경 변수를 확인하세요!")
+    raise ValueError("OpenAI API 키가 설정되지 않았습니다. 환경 변수를 확인하세요.")
 
 client = openai.OpenAI(api_key=api_key)
 
