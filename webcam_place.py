@@ -19,7 +19,7 @@ FEEDBACK_INTERVAL = 1.5
 YOLO_INTERVAL = 1.5
 TTS_RATE = 200
 MIN_FEEDBACK_INTERVAL = 4
-GRAB_HOLD_DURATION = 2.0  # 2초 이상 가까이 있으면 잡은 것으로 판단
+GRAB_HOLD_DURATION = 3.0  # 3초 이상 가까이 있으면 잡은 것으로 판단
 HAND_FEEDBACK_INTERVAL = 9.0
 
 
@@ -156,22 +156,35 @@ def feedback_loop():
             frame = frame_for_display.copy() if frame_for_display is not None else None
 
         if step == "find_target":
-            if not target and frame is not None:
-                speak_feedback("타겟이 감지되지 않았습니다. 주변을 둘러봐 주세요.")
+            if frame is None:
                 continue
-            elif not initial_target_direction_given and target and frame is not None:
+
+            # 타겟/목적지 감지되지 않은 경우
+            if not target and not destination:
+                speak_feedback("타겟과 목적지가 감지되지 않았습니다.")
+                continue
+            elif not target:
+                speak_feedback("타겟이 감지되지 않았습니다.")
+                continue
+            elif not destination:
+                speak_feedback("목적지가 감지되지 않았습니다.")
+                continue
+
+            # 타겟 방향 안내
+            if not initial_target_direction_given and target:
                 msg = get_initial_direction_comment(target, (frame.shape[1], frame.shape[0]))
                 speak_feedback(msg)
                 initial_target_direction_given = True
 
+            # 손 감지 여부 체크
             if not hand:
-                if target:
-                    now = time.time()
-                    if now - last_hand_feedback_time > HAND_FEEDBACK_INTERVAL:
-                        speak_hand_feedback("손이 감지되지 않았습니다.")
-                        last_hand_feedback_time = now
+                now = time.time()
+                if now - last_hand_feedback_time > HAND_FEEDBACK_INTERVAL:
+                    speak_hand_feedback("손이 감지되지 않았습니다.")
+                    last_hand_feedback_time = now
                 continue
 
+            # 손과 타겟 거리 계산
             hx, hy = hand
             tx, ty = target
             dx, dy = tx - hx, ty - hy
@@ -204,7 +217,7 @@ def feedback_loop():
                 else:
                     speak_feedback(f"{direction}으로 이동하세요.")
             else:
-                near_intro_done = False  # NEAR_THRESHOLD 벗어나면 초기화 (다시 진입할 수 있도록)
+                near_intro_done = False  # NEAR_THRESHOLD 벗어나면 초기화
                 if not target_intro_done:
                     speak_feedback(f"타겟에 접근 중입니다. {direction}으로 이동하세요.")
                     target_intro_done = True
@@ -213,6 +226,9 @@ def feedback_loop():
             prev_distance = distance
 
         elif step == "move_to_destination":
+            if frame is None:
+                continue
+
             if not dest:
                 speak_feedback("목적지가 감지되지 않았습니다.")
                 continue
@@ -220,7 +236,7 @@ def feedback_loop():
             if not hand:
                 now = time.time()
                 if now - last_hand_feedback_time > HAND_FEEDBACK_INTERVAL:
-                    speak_feedback("손이 감지되지 않았습니다.")
+                    speak_hand_feedback("손이 감지되지 않았습니다.")
                     last_hand_feedback_time = now
                 continue
 
@@ -286,7 +302,7 @@ if __name__ == "__main__":
 
     print(f"📌 타겟: {target}, 목적지: {destination}")
 
-    cap = cv2.VideoCapture(2)
+    cap = cv2.VideoCapture(1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
