@@ -141,11 +141,12 @@ def get_initial_direction_comment(pos, frame_size):
 
 def ask_gpt_if_grabbed(image, target):
     question = (
-        f"이미지를 보고 사람이 '{target}'를 손으로 확실히 잡고 있거나 움켜쥐고 있는 경우에만 다음 형식으로 대답해줘:\n"
-        '{ "grabbed": true }\n\n'
-        "손이 물체 위에 있거나 근처에 있지만 명확히 잡고 있지 않으면:\n"
-        '{ "grabbed": false }\n\n'
-        "이유나 다른 설명은 하지 말고, 위 JSON 형식 그대로만 대답해줘."
+        f"이미지를 보고 사람이 '{target}'을 손으로 잡고 있는지 판단해줘. "
+        f"손이 '{target}' 위에 완전히 올라가 있고 일부 감싸고 있거나, 확실히 잡고 있다면 다음과 같이 응답해:\n"
+        '{ "grabbed": "true" }\n\n'
+        "손이 근처에 있지만 명확하게 잡지 않았으면:\n"
+        '{ "grabbed": "false" }\n\n'
+        f"중요: 이미지가 불분명하더라도 손이 '{target}'을 감싸고 있거나, '{target}' 대부분을 덮고 있다면 true로 판단해줘."
     )
 
     _, buffer = cv2.imencode('.jpg', image)
@@ -178,7 +179,7 @@ def ask_gpt_if_grabbed(image, target):
         # JSON 응답 파싱 시도
         try:
             parsed = json.loads(result)
-            return parsed.get("grabbed", False)
+            return str(parsed.get("grabbed", "")).strip().lower() == "true"
         except json.JSONDecodeError:
             print("⚠️ JSON 파싱 실패. 응답 내용 확인:", result)
             return False
@@ -250,6 +251,9 @@ def feedback_loop():
                     if frame is not None:
                         speak_feedback("손이 물체를 잡았는지 확인 중입니다.")
                         is_grabbed = ask_gpt_if_grabbed(frame, target)
+
+                        if isinstance(is_grabbed, str):
+                            is_grabbed = is_grabbed.strip().lower() == "true"
 
                         if is_grabbed:
                             speak_feedback("손이 물체를 잡은 것이 확인되었습니다.")
@@ -362,7 +366,7 @@ if __name__ == "__main__":
 
     print(f"📌 타겟: {target}, 목적지: {destination}")
 
-    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(2, cv2.CAP_DSHOW)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
