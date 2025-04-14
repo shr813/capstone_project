@@ -15,12 +15,12 @@ TASK_FILENAME = "task_plan_destination.json"
 ARRIVE_THRESHOLD = 50
 NEAR_THRESHOLD = 150
 DISTANCE_DELTA = 30
-FEEDBACK_INTERVAL = 2.0
+FEEDBACK_INTERVAL = 1.5
 YOLO_INTERVAL = 1.5
 TTS_RATE = 200
-MIN_FEEDBACK_INTERVAL = 4
+MIN_FEEDBACK_INTERVAL = 4.0
 GRAB_HOLD_DURATION = 3.0
-HAND_FEEDBACK_INTERVAL = 9.0
+HAND_FEEDBACK_INTERVAL = 7.0
 
 # 초기화
 model = YOLO("yolov8n.pt")
@@ -91,7 +91,7 @@ def speak_hand_feedback(text):
                 pass
 
     if current_tts_thread and current_tts_thread.is_alive():
-        current_tts_thread.join()
+        pass
     current_tts_thread = threading.Thread(target=tts_job, daemon=True)
     current_tts_thread.start()
 
@@ -106,7 +106,7 @@ def detect_hand(image):
         return (x, y)
     return None
 
-def find_object_position(image, label, min_conf=0.6, bottom_only=False):
+def find_object_position(image, label, min_conf=0.6):
     resized = cv2.resize(image, (320, 320))
     results = model(resized, verbose=False)
     scale_x = image.shape[1] / 320
@@ -118,10 +118,7 @@ def find_object_position(image, label, min_conf=0.6, bottom_only=False):
             if label.lower() in cls and conf > min_conf:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 cx = int((x1 + x2) / 2 * scale_x)
-                if bottom_only:
-                    cy = int(y2 * scale_y)  # 바닥 부분
-                else:
-                    cy = int((y1 + y2) / 2 * scale_y)  # 중앙 부분
+                cy = int(y2 * scale_y)  # 하단 부분
                 return (cx, cy)
     return None
 
@@ -197,9 +194,6 @@ def feedback_loop():
             else:
                 last_close_to_target_time = None
 
-                if abs(dx) < 30 and abs(dy) < 30:
-                    continue  # 30보다 가까우면 방향 피드백 생략
-
             direction = "오른쪽" if dx > 0 else "왼쪽" if abs(dx) > abs(dy) else "아래" if dy > 0 else "위"
 
             if distance < NEAR_THRESHOLD:
@@ -254,21 +248,16 @@ def yolo_loop():
             frame = frame_for_display.copy() if frame_for_display is not None else None
         if frame is None:
             continue
-
-        # 타겟은 중앙 기준
         if target:
-            pos = find_object_position(frame, target, bottom_only=False)
+            pos = find_object_position(frame, target)
             if pos:
                 target_pos = pos
                 last_seen_target_pos = pos
-
-        # 목적지는 하단 기준
         if destination:
-            pos = find_object_position(frame, destination, bottom_only=True)
+            pos = find_object_position(frame, destination)
             if pos:
                 destination_pos = pos
                 last_seen_destination_pos = pos
-
 
 def load_target_info():
     try:
@@ -285,7 +274,7 @@ if __name__ == "__main__":
         exit()
     print(f"📌 타겟: {target}, 목적지: {destination}")
 
-    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(2, cv2.CAP_DSHOW)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
