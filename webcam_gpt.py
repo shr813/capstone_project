@@ -41,6 +41,7 @@ hand_pos, frame_for_display = None, None
 frame_lock = threading.Lock()
 last_hand_feedback_time = 0
 near_intro_done = False
+miss_count = 0  # 물체 미검출 시 카운트
 
 # 피드백 상태
 last_feedback_time, last_feedback_text = 0, None
@@ -197,7 +198,7 @@ def feedback_loop():
     global step, target_intro_done, destination_intro_done
     global prev_distance, target_grabbed, last_close_to_target_time
     global initial_target_direction_given, last_hand_feedback_time
-    global near_intro_done
+    global near_intro_done, miss_count
 
     while True:
         time.sleep(FEEDBACK_INTERVAL)
@@ -209,15 +210,36 @@ def feedback_loop():
             frame = frame_for_display.copy() if frame_for_display is not None else None
 
         if step == "find_target":
+
+            if target is None:
+                miss_count += 1
+                if miss_count == 3:
+                    speak_feedback("오른쪽으로 천천히 움직여 주세요.")
+                elif miss_count == 6:
+                    speak_feedback("못 찾았어요. 왼쪽으로도 비춰봐 주세요.")
+                elif miss_count == 9:
+                    speak_feedback("위쪽도 확인해주세요.")
+                elif miss_count == 12:
+                    speak_feedback("아래쪽도 봐주세요.")
+                elif miss_count >= 15:
+                    speak_feedback("가까운 곳에는 찾으시는 물건이 없는 것 같아요. 시스템을 중료하겠습니다.")
+                    if current_tts_thread:
+                        current_tts_thread.join()
+                    os._exit(0)
+                continue
+            else:
+                miss_count = 0  # 검출 성공 시 카운트 초기화
+                #찾았습니다. 안내멘트
+
             if frame is None:
                 continue
-            if not target and not destination:
+            if not target and not dest:
                 speak_feedback("타겟과 목적지가 감지되지 않았습니다.")
                 continue
             elif not target:
                 speak_feedback("타겟이 감지되지 않았습니다.")
                 continue
-            elif not destination:
+            elif not dest:
                 speak_feedback("목적지가 감지되지 않았습니다.")
                 continue
 
