@@ -1,16 +1,29 @@
 import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"   # 0=ALL, 1=INFO, 2=WARNING, 3=ERROR
+import logging
+logging.getLogger("absl").setLevel(logging.ERROR)
 import sys
 import cv2
+if hasattr(cv2, 'utils') and hasattr(cv2.utils, 'logging'):
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
 import json
 import math
 import time
 import threading
 import pyttsx3
 import mediapipe as mp
+try:
+    mp.logging.set_verbosity(mp.logging.ERROR)
+except:
+    # older versions of MediaPipe
+    logging.getLogger('mediapipe').setLevel(logging.ERROR)
 from ultralytics import YOLO
+from ultralytics import YOLO as _YOLO
 from datetime import datetime
 import openai
 import base64
+from voice_command import get_yes_no_response, get_command
+from task_planner_dest import load_command, extract_target_with_gpt
 
 # 설정
 TASK_FILENAME = "task_plan_destination.json"
@@ -37,11 +50,18 @@ hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1,
 target, destination = None, None
 target_pos, destination_pos = None, None
 last_seen_target_pos, last_seen_destination_pos = None, None
+last_seen_target_time = 0.0
+last_seen_destination_time = 0.0
+EXPIRE_TIME = 3.0   #3초이상 감지 안 되면 점 지움
 hand_pos, frame_for_display = None, None
 frame_lock = threading.Lock()
 last_hand_feedback_time = 0
 near_intro_done = False
 miss_count = 0  # 물체 미검출 시 카운트
+pano_width, pano_height = None, None
+pan_target_pos, pan_dest_pos = None, None
+pan_target_prompted = False
+pan_dest_prompted = False
 
 # 피드백 상태
 last_feedback_time, last_feedback_text = 0, None
@@ -53,6 +73,59 @@ target_grabbed = False
 last_close_to_target_time = None
 initial_target_direction_given = False
 
+
+
+def auto_panorama_scan(scan_duration=7.0, capture_interval=0.6, cam_index=2):
+    cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
+    frames = []
+    print("🗣 파노라마 스캔을 7초동안 진행하겠습니다. 오른쪽으로 천천히 돌아봐주세요.")
+    tts.say("파노라마 스캔을 7초동안 진행하겠습니다. 오른쪽으로 천천히 돌아봐주세요.")
+    tts.runAndWait()
+
+    start_t = time.time()
+    next_capture = start_t
+
+    while time.time() - start_t < scan_duration:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        now = time.time()
+        if now >= next_capture:
+            frames.append(frame.copy())
+            next_capture += capture_interval
+        cv2.waitKey(1)
+    cap.release()
+    # stitch
+    stitcher = cv2.Stitcher_create()
+    status, pano = stitcher.stitch(frames)
+    if status != cv2.Stitcher_OK:
+        print("⚠️ 파노라마 생성 실패:", status)
+        return None
+    print("✅ 파노라마 생성 완료")
+    return pano
+
+def detect_on_panorama(pano_img, target_label, dest_label=None, return_labels=False):
+    model = _YOLO("yolov8n.pt")
+    results = model(pano_img)
+    tgt, dst = None, None
+    labels = []
+    for r in results:
+        for box in r.boxes:
+            cls = model.names[int(box.cls)].lower()
+            labels.append(cls)
+
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            cx = int((x1 + x2)/2)
+            cy = int((y1 + y2)/2)
+            if target_label.lower() in cls:
+                tgt = (cx, cy)
+            if dest_label and dest_label.lower() in cls:
+                dst = (cx, cy)
+    if return_labels:
+        return tgt, dst, labels
+    return tgt, dst
+
+
 def speak_feedback(text):
     global last_feedback_time, last_feedback_text, current_tts_thread
     now = time.time()
@@ -62,19 +135,23 @@ def speak_feedback(text):
     last_feedback_time = now
     print("🗣", text)
 
-    def tts_job():
-        with tts_lock:
-            try:
-                tts.stop()
-                tts.say(text)
-                tts.runAndWait()
-            except:
-                pass
+    # def tts_job():
+    #     with tts_lock:
+    #         try:
+    #             tts.stop()
+    #             tts.say(text)
+    #             tts.runAndWait()
+    #         except:
+    #             pass
+    #
+    # if current_tts_thread and current_tts_thread.is_alive():
+    #     pass
+    # current_tts_thread = threading.Thread(target=tts_job, daemon=True)
+    # current_tts_thread.start()
 
-    if current_tts_thread and current_tts_thread.is_alive():
-        pass
-    current_tts_thread = threading.Thread(target=tts_job, daemon=True)
-    current_tts_thread.start()
+    with tts_lock:
+        tts.say(text)
+        tts.runAndWait()
 
 def speak_hand_feedback(text):
     global last_hand_feedback_time, current_tts_thread
@@ -84,19 +161,23 @@ def speak_hand_feedback(text):
     last_hand_feedback_time = now
     print("🗣", text)
 
-    def tts_job():
-        with tts_lock:
-            try:
-                tts.stop()
-                tts.say(text)
-                tts.runAndWait()
-            except:
-                pass
+    # def tts_job():
+    #     with tts_lock:
+    #         try:
+    #             tts.stop()
+    #             tts.say(text)
+    #             tts.runAndWait()
+    #         except:
+    #             pass
+    #
+    # if current_tts_thread and current_tts_thread.is_alive():
+    #     pass
+    # current_tts_thread = threading.Thread(target=tts_job, daemon=True)
+    # current_tts_thread.start()
 
-    if current_tts_thread and current_tts_thread.is_alive():
-        pass
-    current_tts_thread = threading.Thread(target=tts_job, daemon=True)
-    current_tts_thread.start()
+    with tts_lock:
+        tts.say(text)
+        tts.runAndWait()
 
 def detect_hand(image):
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -126,8 +207,8 @@ def find_object_position(image, label, min_conf=0.6):
     return None
 
 def get_initial_direction_comment(pos, frame_size):
-    if pos is None:
-        return "타겟 위치를 찾을 수 없습니다."
+    # if pos is None:
+    #     return "타겟 위치를 찾을 수 없습니다."
 
     x, y = pos
     w, h = frame_size
@@ -195,86 +276,63 @@ def ask_gpt_if_grabbed(image, target):
 # ------------------ 피드백 루프 ------------------
 
 def feedback_loop():
-    global step, target_intro_done, destination_intro_done
-    global prev_distance, target_grabbed, last_close_to_target_time
+    global step, target_intro_done, destination_intro_done, target_grabbed, last_close_to_target_time
     global initial_target_direction_given, last_hand_feedback_time
-    global near_intro_done, miss_count
+    global pan_target_prompted, pan_dest_prompted
 
     while True:
         time.sleep(FEEDBACK_INTERVAL)
 
         with frame_lock:
             hand = hand_pos
-            target = target_pos or last_seen_target_pos
-            dest = destination_pos or last_seen_destination_pos
+            tgt = target_pos or last_seen_target_pos
+            dst = destination_pos or last_seen_destination_pos
             frame = frame_for_display.copy() if frame_for_display is not None else None
 
+        # 1) find_target 단계
         if step == "find_target":
-
-            if target is None:
-                miss_count += 1
-                if miss_count == 3:
-                    speak_feedback("오른쪽으로 천천히 움직여 주세요.")
-                elif miss_count == 6:
-                    speak_feedback("못 찾았어요. 왼쪽으로도 비춰봐 주세요.")
-                elif miss_count == 9:
-                    speak_feedback("위쪽도 확인해주세요.")
-                elif miss_count == 12:
-                    speak_feedback("아래쪽도 봐주세요.")
-                elif miss_count >= 15:
-                    speak_feedback("가까운 곳에는 찾으시는 물건이 없는 것 같아요. 시스템을 중료하겠습니다.")
-                    if current_tts_thread:
-                        current_tts_thread.join()
-                    os._exit(0)
-                continue
-            else:
-                miss_count = 0  # 검출 성공 시 카운트 초기화
-                #찾았습니다. 안내멘트
-
-            if frame is None:
-                continue
-            if not target and not dest:
-                speak_feedback("타겟과 목적지가 감지되지 않았습니다.")
-                continue
-            elif not target:
-                speak_feedback("타겟이 감지되지 않았습니다.")
-                continue
-            elif not dest:
-                speak_feedback("목적지가 감지되지 않았습니다.")
-                continue
-
-            if not initial_target_direction_given and target and isinstance(target, tuple):
-                msg = get_initial_direction_comment(target, (frame.shape[1], frame.shape[0]))
+            # 타겟이 처음 감지되었을 때, 딱 한 번만 방향 안내
+            if tgt is not None and not initial_target_direction_given:
+                # frame 크기: (width, height)
+                msg = get_initial_direction_comment(tgt, (frame.shape[1], frame.shape[0]))
                 speak_feedback(msg)
                 initial_target_direction_given = True
-
-            if not hand:
-                now = time.time()
-                if now - last_hand_feedback_time > HAND_FEEDBACK_INTERVAL:
-                    speak_hand_feedback("손이 감지되지 않았습니다.")
-                    last_hand_feedback_time = now
+            # 타겟이 없으면 파노라마 기준 좌/우 안내 (한 번만)
+            if tgt is None:
+                if pan_target_pos:
+                    if not pan_target_prompted:
+                        msg = "오른쪽을 봐주세요." if pan_target_pos[0] > pano_width / 2 else "왼쪽을 봐주세요."
+                        speak_feedback(msg)
+                        pan_target_prompted = True
+                else:
+                    speak_feedback("타겟 위치 정보를 알 수 없습니다.")
                 continue
 
-            hx, hy = hand
-            tx, ty = target
-            dx, dy = tx - hx, ty - hy
-            distance = math.sqrt(dx ** 2 + dy ** 2)
+            # 타겟이 보이면 플래그 리셋
+            pan_target_prompted = False
 
-            if distance < ARRIVE_THRESHOLD:
+            # 타겟이 잡혔는지 확인하기 전까지는 거리 안내
+            if not hand:
+                speak_hand_feedback("손이 감지되지 않습니다.")
+                continue
+
+            dx, dy = tgt[0] - hand[0], tgt[1] - hand[1]
+            dist = math.hypot(dx, dy)
+
+            # 손이 타겟 가까이 왔을 때 잡기 유도 + 확인
+            if dist < ARRIVE_THRESHOLD:
                 if not last_close_to_target_time:
                     last_close_to_target_time = datetime.now()
                 elif (datetime.now() - last_close_to_target_time).total_seconds() >= 3:
                     speak_feedback("손을 뻗어 잡으세요.")
-
-                    # 3초 대기 후 프레임 캡처
-                    time.sleep(3.0)
-
+                    # 잡기 확인 로직
+                    time.sleep(4.0)
                     with frame_lock:
                         latest_frame = frame_for_display.copy() if frame_for_display is not None else None
 
                     if latest_frame is not None and hand is not None:
                         hx, hy = hand
-                        tx, ty = target
+                        tx, ty = tgt
                         h, w, _ = latest_frame.shape
                         mx, my = int((hx + tx) / 2), int((hy + ty) / 2)
                         x1, x2 = max(0, mx - 200), min(w, mx + 200)
@@ -282,78 +340,65 @@ def feedback_loop():
                         crop = latest_frame[y1:y2, x1:x2]
                         cv2.imwrite("debug_crop.jpg", crop)
 
-                        # speak_feedback("손이 물체를 잡았는지 확인 중입니다.")
                         is_grabbed = ask_gpt_if_grabbed(crop, target)
-
                         if isinstance(is_grabbed, str):
                             is_grabbed = is_grabbed.strip().lower() == "true"
 
                         if is_grabbed:
-                            #speak_feedback("손이 물체를 잡은 것이 확인되었습니다.")
+                            speak_feedback("잘 잡았어요.")
                             target_grabbed = True
                             step = "move_to_destination"
-                            destination_intro_done = False
                             target_intro_done = False
+                            destination_intro_done = False
                             time.sleep(1.5)
                             continue
                         else:
                             speak_feedback("아직 잡지 않은 것 같아요.")
             else:
-                    last_close_to_target_time = None
+                last_close_to_target_time = None
+                # 손↔타겟 거리 안내
+                direction = "오른쪽" if dx > 0 else "왼쪽" if abs(dx) > abs(dy) else "위" if dy < 0 else "아래"
+                speak_feedback(f"{direction}으로 이동하세요.")
+            continue
 
-            direction = "오른쪽" if dx > 0 else "왼쪽" if abs(dx) > abs(dy) else "아래" if dy > 0 else "위"
-            speak_feedback(f"{direction}으로 이동하세요.")
 
-            # if distance < NEAR_THRESHOLD:
-            #     if not near_intro_done:
-            #         speak_feedback(f"거의 도착했어요. {direction}으로 이동하세요.")
-            #         near_intro_done = True
-            #     else:
-            #         speak_feedback(f"{direction}으로 이동하세요.")
-            # else:
-            #     near_intro_done = False
-            #     if not target_intro_done:
-            #         speak_feedback(f"타겟에 접근 중입니다. {direction}으로 이동하세요.")
-            #         target_intro_done = True
-            #     else:
-            #         speak_feedback(f"{direction}으로 이동하세요.")
-            prev_distance = distance
-
+        # 2) move_to_destination 단계
         elif step == "move_to_destination":
-            if frame is None:
+            # (a) 목적지가 화면에 보이지 않을 때 → 파노라마 기준 좌/우 안내
+            if dst is None:
+                if pan_dest_pos:
+                    if not pan_dest_prompted:
+                        msg = "오른쪽을 봐주세요." if pan_dest_pos[0] > pano_width / 2 else "왼쪽을 봐주세요."
+                        speak_feedback(msg)
+                        pan_dest_prompted = True
+                else:
+                    speak_feedback("목적지 위치 정보를 알 수 없습니다.")
                 continue
-            if not dest:
-                speak_feedback("목적지가 감지되지 않았습니다.")
-                continue
+
+            pan_dest_prompted = False
+
+            # (b) 목적지가 보이면 손↔목적지 거리 안내
             if not hand:
-                now = time.time()
-                if now - last_hand_feedback_time > HAND_FEEDBACK_INTERVAL:
-                    speak_hand_feedback("손이 감지되지 않았습니다.")
-                    last_hand_feedback_time = now
+                speak_hand_feedback("손이 감지되지 않습니다.")
                 continue
 
-            hx, hy = hand
-            dx, dy = dest[0] - hx, dest[1] - hy
-            distance = math.sqrt(dx ** 2 + dy ** 2)
+            dx, dy = dst[0] - hand[0], dst[1] - hand[1]
+            dist = math.hypot(dx, dy)
 
-            if distance < ARRIVE_THRESHOLD:
+            if dist < ARRIVE_THRESHOLD:
                 speak_feedback("목적지에 도착했습니다. 내려놓으세요.")
                 step = "done"
-                continue
-
-            direction = "오른쪽" if dx > 0 else "왼쪽" if abs(dx) > abs(dy) else "아래" if dy > 0 else "위"
-
-            if not destination_intro_done:
-                speak_feedback("목적지로 이동 중입니다.")
-                destination_intro_done = True
             else:
+                direction = "오른쪽" if dx > 0 else "왼쪽" if abs(dx) > abs(dy) else "위" if dy < 0 else "아래"
                 speak_feedback(f"{direction}으로 이동하세요.")
+            continue
 
 
 # ------------------ 객체 위치 갱신 루프 ------------------
 
 def yolo_loop():
     global target_pos, destination_pos, last_seen_target_pos, last_seen_destination_pos
+    global last_seen_target_time, last_seen_destination_time
     while True:
         time.sleep(YOLO_INTERVAL)
         with frame_lock:
@@ -364,13 +409,13 @@ def yolo_loop():
         if target:
             pos = find_object_position(frame, target)
             if pos:
-                target_pos = pos
-                last_seen_target_pos = pos
+                target_pos = last_seen_target_pos = pos
+                last_seen_target_time = time.time()
         if destination:
             pos = find_object_position(frame, destination)
             if pos:
-                destination_pos = pos
-                last_seen_destination_pos = pos
+                destination_pos = last_seen_destination_pos = pos
+                last_seen_destination_time = time.time()
 
 
 # ------------------ 메인 ------------------
@@ -383,12 +428,135 @@ def load_target_info():
     except:
         return None, None
 
+
+
 if __name__ == "__main__":
     target, destination = load_target_info()
     if not target or not destination:
         print("❌ 타겟 또는 목적지 정보를 불러오지 못했습니다.")
         exit()
     print(f"📌 타겟: {target}, 목적지: {destination}")
+
+    # 1) 파노라마 스캔 및 검출
+    print("🗣 파노라마 스캔을 위해 10시 방향으로 몸을 돌려주세요.")
+    tts.say("파노라마 스캔을 위해 10시 방향으로 몸을 돌려주세요.")
+    tts.runAndWait()
+    pano = auto_panorama_scan(scan_duration=7.0, capture_interval=0.6, cam_index=2)
+
+    if pano is None:
+        # stitch 실패 시 한 번 더 재시도
+        speak_feedback("파노라마 생성에 실패했습니다. 다시 한 번 스캔하겠습니다.")
+        speak_feedback("8시 방향으로 돌아주세요.")
+        pano = auto_panorama_scan(scan_duration=7.0, capture_interval=0.6, cam_index=2)
+
+    if pano is None:
+        sys.exit("파노라마 재시도에도 실패했습니다. 프로그램을 종료합니다.")
+
+    cv2.imwrite("panorama.jpg", pano)
+    tgt_pos, dst_pos, labels = detect_on_panorama(pano, target, destination, return_labels=True)
+    pano_width, pano_height = pano.shape[1], pano.shape[0]
+    pan_target_pos, pan_dest_pos = tgt_pos, dst_pos
+
+    # 둘 다 못 찾았으면 한 번 더 시도
+    if not tgt_pos and not dst_pos:
+        speak_feedback("파노라마에서 타겟과 목적지를 찾지 못했습니다. 다시 한 번 스캔하겠습니다.")
+        speak_feedback("8시 방향으로 돌아주세요.")
+        pano = auto_panorama_scan(scan_duration=7.0, capture_interval=0.6, cam_index=2)
+        if pano is None:
+            sys.exit("파노라마 재스캔 실패 — 프로그램을 종료합니다.")
+        cv2.imwrite("panorama.jpg", pano)
+        if destination:
+            tgt_pos, dst_pos, labels = detect_on_panorama(pano, target, destination, return_labels=True)
+        else:
+            tgt_pos, _, labels = detect_on_panorama(pano, target, None, return_labels=True)
+            dst_pos = None
+
+    # 두 번 시도 후에도 못 찾았을 때
+    if not tgt_pos and not dst_pos:
+        seen = ", ".join(sorted(set(labels))) or "없음"
+        speak_feedback(
+            f"찾으시는 {target}"
+            + (f" / {destination}" if destination else "")
+            + f" 물체는 보이지 않습니다. "
+            f"현재 보이는 물체는 {seen}입니다."
+        )
+        if current_tts_thread and current_tts_thread.is_alive():
+            current_tts_thread.join()
+        answer = get_yes_no_response()
+        if not answer:
+            speak_feedback("프로그램을 종료하겠습니다.")
+            sys.exit(0)
+        else:
+            speak_feedback("필요한 물건을 말씀해주세요.")
+            get_command()
+            # 새 명령어 로드 & GPT 추출
+            cmd_text = load_command()
+            info = extract_target_with_gpt(cmd_text)
+            target = info.get("target")
+            destination = info.get("destination")
+            # 재초기화 후 계속 진행
+
+    # 정상 안내 분기 (destination 유무에 따라 다른 안내)
+    seen = ", ".join(sorted(set(labels))) or "없음"
+    if destination:
+        if tgt_pos and dst_pos:
+            speak_feedback("타겟과 목적지 물체를 찾았습니다. 안내를 시작하겠습니다.")
+        elif tgt_pos:
+            speak_feedback(f"{target}만 찾았습니다. 현재 보이는 물체는 {seen}입니다.")
+            if current_tts_thread and current_tts_thread.is_alive():
+                current_tts_thread.join()
+            answer = get_yes_no_response()
+            if not answer:
+                speak_feedback("프로그램을 종료하겠습니다.")
+                sys.exit(0)
+            else:
+                speak_feedback("찾으실 물건을 말씀해주세요.")
+                get_command()
+                # 새 명령어 로드 & GPT 추출
+                cmd_text = load_command()
+                info = extract_target_with_gpt(cmd_text)
+                target = info.get("target")
+                destination = info.get("destination")
+        else:
+            speak_feedback(f"{destination}만 찾았습니다. 현재 보이는 물체는 {seen}입니다.")
+            if current_tts_thread and current_tts_thread.is_alive():
+                current_tts_thread.join()
+            answer = get_yes_no_response()
+            if not answer:
+                speak_feedback("프로그램을 종료합니다.")
+                sys.exit(0)
+            else:
+                speak_feedback("찾으실 물건을 말씀해주세요.")
+                get_command()
+                # 새 명령어 로드 & GPT 추출
+                cmd_text = load_command()
+                info = extract_target_with_gpt(cmd_text)
+                target = info.get("target")
+                destination = info.get("destination")
+    else:
+        if not tgt_pos:
+            speak_feedback("물체를 찾지 못했습니다. 현재 보이는 물체는 {seen}입니다. ")
+            if current_tts_thread and current_tts_thread.is_alive():
+                current_tts_thread.join()
+            answer = get_yes_no_response()
+            if not answer:
+                speak_feedback("프로그램을 종료합니다.")
+                sys.exit(0)
+            else:
+                speak_feedback("찾으실 물건을 말씀해주세요.")
+                get_command()
+                # 새 명령어 로드 & GPT 추출
+                cmd_text = load_command()
+                info = extract_target_with_gpt(cmd_text)
+                target = info.get("target")
+                destination = info.get("destination")
+
+
+    # 파노라마 위치 결과로 전역 변수 초기화
+    target_pos = last_seen_target_pos = tgt_pos
+    destination_pos = last_seen_destination_pos = dst_pos
+    pano_width, pano_height = pano.shape[1], pano.shape[0]
+    pan_target_pos, pan_dest_pos = tgt_pos, dst_pos
 
     cap = cv2.VideoCapture(2, cv2.CAP_DSHOW)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -402,19 +570,48 @@ if __name__ == "__main__":
         if not ret:
             break
 
+        now = time.time()
         with frame_lock:
+            if target_pos and now - last_seen_target_time > EXPIRE_TIME:
+                target_pos = None
+                last_seen_target_pos = None
+            if destination_pos and now - last_seen_destination_time > EXPIRE_TIME:
+                destination_pos = None
+                last_seen_destination_pos = None
+
             frame_for_display = frame.copy()
-            if any([target_pos, destination_pos, last_seen_target_pos, last_seen_destination_pos]):
+            if target_pos or destination_pos:
                 hand_pos = detect_hand(frame)
             else:
                 hand_pos = None
 
         if hand_pos:
             cv2.circle(frame_for_display, hand_pos, 10, (0, 255, 0), -1)
-        tp = target_pos or last_seen_target_pos
+
+        now = time.time()
+        tp = None
+        if target_pos:
+            tp = target_pos
+        elif last_seen_target_pos and now - last_seen_target_time < EXPIRE_TIME:
+            tp = last_seen_target_pos
+        elif last_seen_target_pos and hand_pos:  # 손이 가려서 안 보인 경우: 손과 마지막 위치가 가까우면 유지
+            if math.hypot(hand_pos[0] - last_seen_target_pos[0],
+                          hand_pos[1] - last_seen_target_pos[1]) < ARRIVE_THRESHOLD:
+                tp = last_seen_target_pos
+
         if tp and isinstance(tp, tuple):
             cv2.circle(frame_for_display, tp, 10, (0, 0, 255), -1)
-        dp = destination_pos or last_seen_destination_pos
+
+        dp = None
+        if destination_pos:
+            dp = destination_pos
+        elif last_seen_destination_pos and now - last_seen_destination_time < EXPIRE_TIME:
+            dp = last_seen_destination_pos
+        elif last_seen_destination_pos and hand_pos:
+            if math.hypot(hand_pos[0] - last_seen_destination_pos[0],
+                          hand_pos[1] - last_seen_destination_pos[1]) < ARRIVE_THRESHOLD:
+                dp = last_seen_destination_pos
+
         if dp and isinstance(dp, tuple):
             cv2.circle(frame_for_display, dp, 10, (255, 0, 0), -1)
 
