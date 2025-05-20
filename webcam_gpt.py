@@ -1,8 +1,9 @@
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"   # 0=ALL, 1=INFO, 2=WARNING, 3=ERROR
 import logging
-logging.getLogger("absl").setLevel(logging.ERROR)
 import sys
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+logging.getLogger("absl").setLevel(logging.ERROR)
+sys.stderr = open(os.devnull, 'w')
 import cv2
 if hasattr(cv2, 'utils') and hasattr(cv2.utils, 'logging'):
     cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
@@ -26,7 +27,7 @@ from voice_command import get_yes_no_response, get_command
 from task_planner_dest import load_command, extract_target_with_gpt
 
 # 설정
-TASK_FILENAME = "task_plan_destination.json"
+TASK_FILENAME = "task_plan.json"
 ARRIVE_THRESHOLD = 50
 NEAR_THRESHOLD = 150
 DISTANCE_DELTA = 30
@@ -273,6 +274,113 @@ def ask_gpt_if_grabbed(image, target):
         return False
 
 
+def new_command():
+    global target, destination
+    if current_tts_thread and current_tts_thread.is_alive():
+        current_tts_thread.join()
+
+    answer = get_yes_no_response()
+    if not answer:
+        speak_feedback("프로그램을 종료하겠습니다.")
+        sys.exit(0)
+    else:
+        speak_feedback("'어떤 것을 찾아줘' 또는 '어떤 것을 어디에 두고 싶어' 등의 형식으로 말씀해주세요.")
+        get_command()
+        cmd_text = load_command()
+        info = extract_target_with_gpt(cmd_text)
+        target = info.get("target")
+        destination = info.get("destination")
+
+
+def to_korean(label):
+    if not label:
+        return ""
+    return class_map.get(label.lower(), label)
+
+class_map = {
+    "person": "사람",
+    "bicycle": "자전거",
+    "car": "자동차",
+    "motorcycle": "오토바이",
+    "airplane": "비행기",
+    "bus": "버스",
+    "train": "기차",
+    "truck": "트럭",
+    "boat": "보트",
+    "traffic light": "신호등",
+    "fire hydrant": "소화전",
+    "stop sign": "정지 표지판",
+    "parking meter": "주차 미터기",
+    "bench": "벤치",
+    "bird": "새",
+    "cat": "고양이",
+    "dog": "강아지",
+    "horse": "말",
+    "sheep": "양",
+    "cow": "소",
+    "elephant": "코끼리",
+    "bear": "곰",
+    "zebra": "얼룩말",
+    "giraffe": "기린",
+    "backpack": "배낭",
+    "umbrella": "우산",
+    "handbag": "핸드백",
+    "tie": "넥타이",
+    "suitcase": "여행가방",
+    "frisbee": "프리스비",
+    "skis": "스키",
+    "snowboard": "스노보드",
+    "sports ball": "공",
+    "kite": "연",
+    "baseball bat": "야구 배트",
+    "baseball glove": "야구 글러브",
+    "skateboard": "스케이트보드",
+    "surfboard": "서핑보드",
+    "tennis racket": "테니스 라켓",
+    "bottle": "병",
+    "wine glass": "와인잔",
+    "cup": "컵",
+    "fork": "포크",
+    "knife": "칼",
+    "spoon": "숟가락",
+    "bowl": "그릇",
+    "banana": "바나나",
+    "apple": "사과",
+    "sandwich": "샌드위치",
+    "orange": "오렌지",
+    "broccoli": "브로콜리",
+    "carrot": "당근",
+    "hot dog": "핫도그",
+    "pizza": "피자",
+    "donut": "도넛",
+    "cake": "케이크",
+    "chair": "의자",
+    "couch": "소파",
+    "potted plant": "화분",
+    "bed": "침대",
+    "dining table": "식탁",
+    "toilet": "변기",
+    "tv": "티비",
+    "laptop": "노트북",
+    "mouse": "마우스",
+    "remote": "리모컨",
+    "keyboard": "키보드",
+    "cell phone": "휴대폰",
+    "microwave": "전자레인지",
+    "oven": "오븐",
+    "toaster": "토스터",
+    "sink": "싱크대",
+    "refrigerator": "냉장고",
+    "book": "책",
+    "clock": "시계",
+    "vase": "꽃병",
+    "scissors": "가위",
+    "teddy bear": "곰인형",
+    "hair drier": "헤어드라이어",
+    "toothbrush": "칫솔"
+}
+
+
 # ------------------ 피드백 루프 ------------------
 
 def feedback_loop():
@@ -347,11 +455,15 @@ def feedback_loop():
                         if is_grabbed:
                             speak_feedback("잘 잡았어요.")
                             target_grabbed = True
-                            step = "move_to_destination"
-                            target_intro_done = False
-                            destination_intro_done = False
-                            time.sleep(1.5)
-                            continue
+                            if not destination:
+                                speak_feedback("작업이 완료되었습니다. 프로그램을 종료합니다.")
+                                os._exit(0)  # 깔끔하게 종료
+                            else:
+                                step = "move_to_destination"
+                                target_intro_done = False
+                                destination_intro_done = False
+                                time.sleep(1.5)
+                                continue
                         else:
                             speak_feedback("아직 잡지 않은 것 같아요.")
             else:
@@ -471,86 +583,38 @@ if __name__ == "__main__":
             tgt_pos, _, labels = detect_on_panorama(pano, target, None, return_labels=True)
             dst_pos = None
 
+    seen_korean = [class_map.get(label, label) for label in sorted(set(labels))]
+    seen = ", ".join(seen_korean) or "없음"
+
     # 두 번 시도 후에도 못 찾았을 때
     if not tgt_pos and not dst_pos:
-        seen = ", ".join(sorted(set(labels))) or "없음"
         speak_feedback(
-            f"찾으시는 {target}"
-            + (f" / {destination}" if destination else "")
-            + f" 물체는 보이지 않습니다. "
-            f"현재 보이는 물체는 {seen}입니다."
+            f"찾으시는 {to_korean(target)}"
+            + (f" / {to_korean(destination)}" if destination else "")
+            + f" 는 보이지 않습니다. 현재 보이는 물체는 {seen}입니다."
         )
-        if current_tts_thread and current_tts_thread.is_alive():
-            current_tts_thread.join()
-        answer = get_yes_no_response()
-        if not answer:
-            speak_feedback("프로그램을 종료하겠습니다.")
-            sys.exit(0)
-        else:
-            speak_feedback("필요한 물건을 말씀해주세요.")
-            get_command()
-            # 새 명령어 로드 & GPT 추출
-            cmd_text = load_command()
-            info = extract_target_with_gpt(cmd_text)
-            target = info.get("target")
-            destination = info.get("destination")
-            # 재초기화 후 계속 진행
+        new_command()
 
-    # 정상 안내 분기 (destination 유무에 따라 다른 안내)
-    seen = ", ".join(sorted(set(labels))) or "없음"
+    # 목적지 유무에 따라 분기
     if destination:
+        # ✅ 목적지 포함된 명령의 경우
         if tgt_pos and dst_pos:
             speak_feedback("타겟과 목적지 물체를 찾았습니다. 안내를 시작하겠습니다.")
         elif tgt_pos:
-            speak_feedback(f"{target}만 찾았습니다. 현재 보이는 물체는 {seen}입니다.")
-            if current_tts_thread and current_tts_thread.is_alive():
-                current_tts_thread.join()
-            answer = get_yes_no_response()
-            if not answer:
-                speak_feedback("프로그램을 종료하겠습니다.")
-                sys.exit(0)
-            else:
-                speak_feedback("찾으실 물건을 말씀해주세요.")
-                get_command()
-                # 새 명령어 로드 & GPT 추출
-                cmd_text = load_command()
-                info = extract_target_with_gpt(cmd_text)
-                target = info.get("target")
-                destination = info.get("destination")
+            speak_feedback(f"{to_korean(target)}만 찾았습니다. 현재 보이는 물체는 {seen}입니다.")
+            new_command()
+        elif dst_pos:
+            speak_feedback(f"{to_korean(destination)}만 찾았습니다. 현재 보이는 물체는 {seen}입니다.")
+            new_command()
         else:
-            speak_feedback(f"{destination}만 찾았습니다. 현재 보이는 물체는 {seen}입니다.")
-            if current_tts_thread and current_tts_thread.is_alive():
-                current_tts_thread.join()
-            answer = get_yes_no_response()
-            if not answer:
-                speak_feedback("프로그램을 종료합니다.")
-                sys.exit(0)
-            else:
-                speak_feedback("찾으실 물건을 말씀해주세요.")
-                get_command()
-                # 새 명령어 로드 & GPT 추출
-                cmd_text = load_command()
-                info = extract_target_with_gpt(cmd_text)
-                target = info.get("target")
-                destination = info.get("destination")
+            speak_feedback("요청하신 물체를 찾지 못했습니다.")
+            new_command()
     else:
+        # ✅ destination이 없는 경우는 target만 체크
         if not tgt_pos:
-            speak_feedback("물체를 찾지 못했습니다. 현재 보이는 물체는 {seen}입니다. ")
-            if current_tts_thread and current_tts_thread.is_alive():
-                current_tts_thread.join()
-            answer = get_yes_no_response()
-            if not answer:
-                speak_feedback("프로그램을 종료합니다.")
-                sys.exit(0)
-            else:
-                speak_feedback("찾으실 물건을 말씀해주세요.")
-                get_command()
-                # 새 명령어 로드 & GPT 추출
-                cmd_text = load_command()
-                info = extract_target_with_gpt(cmd_text)
-                target = info.get("target")
-                destination = info.get("destination")
-
+            speak_feedback(f"{to_korean(target)}을(를) 찾지 못했습니다.")
+            new_command()
+        # 🔇 타겟이 발견된 경우엔 피드백 없이 바로 탐색 루프 진입
 
     # 파노라마 위치 결과로 전역 변수 초기화
     target_pos = last_seen_target_pos = tgt_pos
