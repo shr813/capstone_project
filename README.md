@@ -12,7 +12,7 @@
 - 명령 분석: 대상/목적지 물체 이름 추출
 - 객체 인식: YOLOv8 (ultralytics)
 - 손 추적: MediaPipe Hands
-- 파노라마 생성 및 실시간 웹캠 캡쳐
+- 파노라마 생성 및 실시간 웹캠 캡쳐 : OpenCV
 - 실시간 피드백: pyttsx3 기반 TTS 출력
 
 ---
