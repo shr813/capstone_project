@@ -36,10 +36,10 @@ tts.setProperty("rate", 200)
 def speak_prompt():
     prompt = (
         "안녕하세요, 저는 여러분의 눈이 되어 물건을 찾는 것을 도와드리겠습니다. "
-        "'어떤 것을 찾아줘' 또는 '어떤 것을 어디에 두고 싶어' 등의 형식으로 말씀해주세요. 5초간 녹음됩니다."
+        "'어떤 것을 찾아줘' 또는 '어떤 것을 어디에 놓아줘' 등의 형식으로 말씀해주세요. 5초간 녹음됩니다."
     )
     print("🗣 안녕하세요, 저는 여러분의 눈이 되어 물건을 찾는 것을 도와드리겠습니다.")
-    print("🗣 '어떤 것을 찾아줘' 또는 '어떤 것을 어디에 두고 싶어' 등의 형식으로 말씀해주세요. 5초간 녹음됩니다.")
+    print("🗣 '어떤 것을 찾아줘' 또는 '어떤 것을 어디에 놓아줘' 등의 형식으로 말씀해주세요. 5초간 녹음됩니다.")
     tts.say(prompt)
     tts.runAndWait()
 
@@ -68,6 +68,40 @@ def record_audio():
     normalized_sound = normalize(sound)
     normalized_sound.export(OUTPUT_FILENAME, format="wav")
 
+def transcribe_audio():
+    """Whisper로 오디오 파일을 텍스트로 변환하고 저장"""
+    #print("음성을 텍스트로 변환 중...")
+
+    # 한국어 명시
+    result = model.transcribe(OUTPUT_FILENAME, language="ko")
+    command_text = result["text"].strip()
+
+    # 말 안 했을 때
+    if len(command_text) < 3:
+        tts.say("음성이 감지되지 않았습니다. 다시 말씀해주세요.")
+        print("🗣 음성이 감지되지 않았습니다. 다시 말씀해주세요.")
+        tts.runAndWait()
+        return None
+
+    # GPT로 명령 의도 판별
+    print("🧠 GPT로 음성 입력 검사 중…")
+    try:
+        if not is_move_intent(command_text):
+            tts.say("'어떤 것을 찾아줘' 또는 '어떤 것을 어디에 놓아줘' 등의 형식으로 말씀해주세요.")
+            print("🗣 '어떤 것을 찾아줘' 또는 '어떤 것을 어디에 놓아줘' 등의 형식으로 말씀해주세요.")
+            tts.runAndWait()
+            return None
+    except Exception as e:
+        print("[GPT 오류]", e)
+        tts.say("명령을 이해하지 못했습니다. 다시 시도해주세요.")
+        tts.runAndWait()
+        return None
+
+    with open(TEXT_FILENAME, "w", encoding="utf-8") as f:
+        f.write(command_text)
+    print(f"변환된 명령어 저장됨: {command_text}")
+    return command_text
+
 
 def is_move_intent(text: str) -> bool:
     prompt = (
@@ -95,40 +129,6 @@ def is_move_intent(text: str) -> bool:
     return answer.startswith("yes")
 
 
-def transcribe_audio():
-    """Whisper로 오디오 파일을 텍스트로 변환하고 저장"""
-    #print("음성을 텍스트로 변환 중...")
-
-    # 한국어 명시
-    result = model.transcribe(OUTPUT_FILENAME, language="ko")
-    command_text = result["text"].strip()
-
-    # 말 안 했을 때
-    if len(command_text) < 3:
-        tts.say("음성이 감지되지 않았습니다. 다시 말씀해주세요.")
-        print("🗣 음성이 감지되지 않았습니다. 다시 말씀해주세요.")
-        tts.runAndWait()
-        return None
-
-    # GPT로 명령 의도 판별
-    print("🧠 GPT로 음성 입력 검사 중…")
-    try:
-        if not is_move_intent(command_text):
-            tts.say("'어떤 것을 찾아줘' 또는 '어떤 것을 어디에 두고 싶어' 등의 형식으로 말씀해주세요.")
-            print("🗣 '어떤 것을 찾아줘' 또는 '어떤 것을 어디에 두고 싶어' 등의 형식으로 말씀해주세요.")
-            tts.runAndWait()
-            return None
-    except Exception as e:
-        print("[GPT 오류]", e)
-        tts.say("명령을 이해하지 못했습니다. 다시 시도해주세요.")
-        tts.runAndWait()
-        return None
-
-    with open(TEXT_FILENAME, "w", encoding="utf-8") as f:
-        f.write(command_text)
-    print(f"변환된 명령어 저장됨: {command_text}")
-    return command_text
-
 def get_command():
     for attempt in range(3):
         record_audio()
@@ -141,54 +141,6 @@ def get_command():
         tts.runAndWait()
         sys.exit(0)
 
-# def get_yes_no_response(prompt_text: str) -> bool:
-#     """
-#     prompt_text 를 TTS로 읽고,
-#     사용자의 응답을 녹음 → Whisper 전사 → GPT로 예/아니오 분류하여
-#     긍정(yes)이면 True, 부정(no)이면 False 반환
-#     """
-#     # 1) 질문
-#     tts.say(prompt_text)
-#     tts.runAndWait()
-#
-#     # 2) 최대 3회 시도
-#     for _ in range(3):
-#         record_audio()
-#         # Whisper 전사
-#         result = model.transcribe(OUTPUT_FILENAME, language="ko")["text"].strip()
-#         if len(result) < 1:
-#             tts.say("응답이 잘 들리지 않았습니다. 다시 말씀해주세요.")
-#             tts.runAndWait()
-#             continue
-#
-#         # 3) GPT로 예/아니오 분류
-#         classification_prompt = (
-#             "다음 응답이 ‘네(긍정)’인지 ‘아니오(부정)’인지 판단해 주세요. "
-#             "반드시 ‘yes’ 또는 ‘no’만 답해주세요.\n\n"
-#             f"응답: \"{result}\""
-#         )
-#         resp = openai.ChatCompletion.create(
-#             model="gpt-4o-mini",
-#             messages=[
-#                 {"role": "system", "content": "당신은 예/아니오 분류 전문가입니다."},
-#                 {"role": "user",   "content": classification_prompt}
-#             ],
-#             temperature=0
-#         )
-#         answer = resp.choices[0].message.content.strip().lower()
-#         if answer.startswith("yes"):
-#             return True
-#         if answer.startswith("no"):
-#             return False
-#
-#         # 그 외 응답일 때
-#         tts.say("예 또는 아니오로만 대답해 주세요.")
-#         tts.runAndWait()
-#
-#     # 3회 모두 이해 불가 시 종료
-#     tts.say("입력을 이해하지 못해 시스템을 종료합니다.")
-#     tts.runAndWait()
-#     sys.exit(0)
 
 def get_yes_no_response():
     """녹음→Whisper 전사→‘예/아니오’ 여부 판단 후 True/False 리턴"""
@@ -208,28 +160,29 @@ def get_yes_no_response():
         # 3) 음성 없으면 재시도
         if not answer:
             local_tts.say("음성이 감지되지 않았습니다. 다시 말씀해주세요.")
+            print("🗣 음성이 감지되지 않았습니다. 다시 말씀해주세요.")
             local_tts.runAndWait()
             continue
         # 4) ‘예’ 계열
-        if any(w in answer for w in ["네", "예", "응", "어"]):
+        if any(w in answer for w in ["네", "예", "응", "어", "넵"]):
             return True
         # 5) ‘아니오’ 계열
-        if any(w in answer for w in ["아니", "아니요", "아니오", "아니야"]):
+        if any(w in answer for w in ["아니", "아니요", "아니오", "아니야", "아냐"]):
             return False
         # 6) 그 외 재입력 안내
         local_tts.say("잘 인식하지 못했어요. ‘예’ 또는 ‘아니오’로만 답해주세요.")
+        print("🗣 잘 인식하지 못했어요. ‘예’ 또는 ‘아니오’로만 답해주세요.")
         local_tts.runAndWait()
 
     # 3회 모두 실패 시 종료
     local_tts = pyttsx3.init()
     local_tts.say("응답을 이해하지 못했습니다. 프로그램을 종료합니다.")
+    print("🗣 응답을 이해하지 못했습니다. 프로그램을 종료합니다.")
     local_tts.runAndWait()
     sys.exit(0)
 
 
 if __name__ == "__main__":
     speak_prompt()
-    #record_audio()
-    #transcribe_audio()
 
     get_command()
