@@ -32,7 +32,7 @@
 
 ## 🖼️ 시스템 구조도
 
-![작품 구조도]![Image](https://github.com/user-attachments/assets/02427961-a3ee-47be-be6d-456d73c5eca4)
+![Image](https://github.com/user-attachments/assets/02427961-a3ee-47be-be6d-456d73c5eca4)
 
 ---
 
