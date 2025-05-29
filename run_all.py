@@ -24,12 +24,12 @@ import subprocess
 
 
 def run_step(script_name):
-    print(f"▶ Running {script_name}...")
+    # print(f"▶ Running {script_name}...")
     result = subprocess.run([sys.executable, script_name])
     if result.returncode != 0:
         print(f"❌ {script_name} exited with code {result.returncode}. Aborting.")
         sys.exit(result.returncode)
-    print(f"✅ {script_name} completed successfully.\n")
+    # print(f"✅ {script_name} completed successfully.\n")
 
 if __name__ == '__main__':
     # 1. 음성 명령 받기
