@@ -16,7 +16,6 @@ import mediapipe as mp
 try:
     mp.logging.set_verbosity(mp.logging.ERROR)
 except:
-    # older versions of MediaPipe
     logging.getLogger('mediapipe').setLevel(logging.ERROR)
 from ultralytics import YOLO
 from ultralytics import YOLO as _YOLO
@@ -74,8 +73,7 @@ target_grabbed = False
 last_close_to_target_time = None
 initial_target_direction_given = False
 
-
-
+#파노라마 함수
 def auto_panorama_scan(scan_duration=7.0, capture_interval=0.6, cam_index=2):
     cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
     frames = []
@@ -105,6 +103,7 @@ def auto_panorama_scan(scan_duration=7.0, capture_interval=0.6, cam_index=2):
     print("✅ 파노라마 생성 완료")
     return pano
 
+#파노라마 yolo탐지
 def detect_on_panorama(pano_img, target_label, dest_label=None, return_labels=False):
     model = _YOLO("yolov8n.pt")
     results = model(pano_img)
@@ -136,20 +135,6 @@ def speak_feedback(text):
     last_feedback_time = now
     print("🗣", text)
 
-    # def tts_job():
-    #     with tts_lock:
-    #         try:
-    #             tts.stop()
-    #             tts.say(text)
-    #             tts.runAndWait()
-    #         except:
-    #             pass
-    #
-    # if current_tts_thread and current_tts_thread.is_alive():
-    #     pass
-    # current_tts_thread = threading.Thread(target=tts_job, daemon=True)
-    # current_tts_thread.start()
-
     with tts_lock:
         tts.say(text)
         tts.runAndWait()
@@ -161,20 +146,6 @@ def speak_hand_feedback(text):
         return
     last_hand_feedback_time = now
     print("🗣", text)
-
-    # def tts_job():
-    #     with tts_lock:
-    #         try:
-    #             tts.stop()
-    #             tts.say(text)
-    #             tts.runAndWait()
-    #         except:
-    #             pass
-    #
-    # if current_tts_thread and current_tts_thread.is_alive():
-    #     pass
-    # current_tts_thread = threading.Thread(target=tts_job, daemon=True)
-    # current_tts_thread.start()
 
     with tts_lock:
         tts.say(text)
@@ -208,9 +179,6 @@ def find_object_position(image, label, min_conf=0.6):
     return None
 
 def get_initial_direction_comment(pos, frame_size):
-    # if pos is None:
-    #     return "타겟 위치를 찾을 수 없습니다."
-
     x, y = pos
     w, h = frame_size
     x_rel, y_rel = x / w, y / h
@@ -276,6 +244,9 @@ def ask_gpt_if_grabbed(image, target):
 
 def new_command():
     global target, destination
+    global target_pos, destination_pos, last_seen_target_pos, last_seen_destination_pos
+    global step, initial_target_direction_given
+
     if current_tts_thread and current_tts_thread.is_alive():
         current_tts_thread.join()
 
@@ -290,6 +261,11 @@ def new_command():
         info = extract_target_with_gpt(cmd_text)
         target = info.get("target")
         destination = info.get("destination")
+
+        target_pos = last_seen_target_pos = None
+        destination_pos = last_seen_destination_pos = None
+        step = "find_target"
+        initial_target_direction_given = False
 
 
 def to_korean(label):
@@ -381,7 +357,7 @@ class_map = {
 }
 
 
-# ------------------ 피드백 루프 ------------------
+# 피드백 루프
 
 def feedback_loop():
     global step, target_intro_done, destination_intro_done, target_grabbed, last_close_to_target_time
@@ -421,7 +397,7 @@ def feedback_loop():
 
             # 타겟이 잡혔는지 확인하기 전까지는 거리 안내
             if not hand:
-                speak_hand_feedback("손이 감지되지 않습니다.")
+                speak_hand_feedback("손이 안 보여요.")
                 continue
 
             dx, dy = tgt[0] - hand[0], tgt[1] - hand[1]
@@ -431,7 +407,7 @@ def feedback_loop():
             if dist < ARRIVE_THRESHOLD:
                 if not last_close_to_target_time:
                     last_close_to_target_time = datetime.now()
-                elif (datetime.now() - last_close_to_target_time).total_seconds() >= 3:
+                elif (datetime.now() - last_close_to_target_time).total_seconds() >= 2:
                     speak_feedback("손을 뻗어 잡으세요.")
                     # 잡기 확인 로직
                     time.sleep(4.0)
@@ -491,7 +467,7 @@ def feedback_loop():
 
             # (b) 목적지가 보이면 손↔목적지 거리 안내
             if not hand:
-                speak_hand_feedback("손이 감지되지 않습니다.")
+                speak_hand_feedback("손이 안 보여요.")
                 continue
 
             dx, dy = dst[0] - hand[0], dst[1] - hand[1]
@@ -506,7 +482,7 @@ def feedback_loop():
             continue
 
 
-# ------------------ 객체 위치 갱신 루프 ------------------
+# 객체 위치 갱신 루프
 
 def yolo_loop():
     global target_pos, destination_pos, last_seen_target_pos, last_seen_destination_pos
@@ -530,7 +506,7 @@ def yolo_loop():
                 last_seen_destination_time = time.time()
 
 
-# ------------------ 메인 ------------------
+# 메인
 
 def load_target_info():
     try:
@@ -571,7 +547,7 @@ if __name__ == "__main__":
 
     # 둘 다 못 찾았으면 한 번 더 시도
     if not tgt_pos and not dst_pos:
-        speak_feedback("파노라마에서 타겟과 목적지를 찾지 못했습니다. 다시 한 번 스캔하겠습니다.")
+        speak_feedback("파노라마에서 타겟과 목적지 물체를 찾지 못했습니다. 다시 한 번 스캔하겠습니다.")
         speak_feedback("8시 방향으로 돌아주세요.")
         pano = auto_panorama_scan(scan_duration=7.0, capture_interval=0.6, cam_index=2)
         if pano is None:
@@ -589,9 +565,7 @@ if __name__ == "__main__":
     # 두 번 시도 후에도 못 찾았을 때
     if not tgt_pos and not dst_pos:
         speak_feedback(
-            f"찾으시는 {to_korean(target)}"
-            + (f" / {to_korean(destination)}" if destination else "")
-            + f" 는 보이지 않습니다. 현재 보이는 물체는 {seen}입니다."
+            f"찾으시는 물체는 보이지 않습니다. 현재 보이는 물체는 {seen}입니다."
         )
         new_command()
 
